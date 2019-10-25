@@ -15,7 +15,6 @@ RUN apt-get update && apt-get install -y \
     unzip \
     git \
     curl \
-
     && \
     # Install Nodejs and NPM
     # curl -sL https://deb.nodesource.com/setup_11.x | bash - && \
