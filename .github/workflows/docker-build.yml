@@ -1,0 +1,96 @@
+name: Build and Push Docker Images
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - 'archived/**'
+      - 'README.md'
+      - '.github/**'
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      has-changes: ${{ steps.set-matrix.outputs.has-changes }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Detect changed directories
+        id: set-matrix
+        run: |
+          # Get changed files between current commit and previous commit
+          CHANGED_FILES=$(git diff --name-only HEAD^ HEAD)
+          
+          echo "Changed files:"
+          echo "$CHANGED_FILES"
+          
+          # Extract unique directories that contain Dockerfiles and are not in archived/
+          CHANGED_DIRS=$(echo "$CHANGED_FILES" | \
+            grep -v '^archived/' | \
+            grep '/' | \
+            cut -d'/' -f1 | \
+            sort -u)
+          
+          echo "Changed directories:"
+          echo "$CHANGED_DIRS"
+          
+          # Check if directories contain Dockerfiles
+          IMAGE_DIRS=""
+          for dir in $CHANGED_DIRS; do
+            if [ -f "$dir/Dockerfile" ]; then
+              IMAGE_DIRS="$IMAGE_DIRS $dir"
+            fi
+          done
+          
+          # Create JSON array for matrix
+          if [ -n "$IMAGE_DIRS" ]; then
+            MATRIX_JSON=$(echo $IMAGE_DIRS | jq -R -c 'split(" ") | map(select(length > 0))')
+            echo "matrix={\"image\":$MATRIX_JSON}" >> $GITHUB_OUTPUT
+            echo "has-changes=true" >> $GITHUB_OUTPUT
+            echo "Images to build: $MATRIX_JSON"
+          else
+            echo "matrix={\"image\":[]}" >> $GITHUB_OUTPUT
+            echo "has-changes=false" >> $GITHUB_OUTPUT
+            echo "No image directories changed"
+          fi
+
+  build-and-push:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.has-changes == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
+      fail-fast: false
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./${{ matrix.image }}
+          file: ./${{ matrix.image }}/Dockerfile
+          push: true
+          tags: madcoda/docker-base:${{ matrix.image }}
+          platforms: linux/amd64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Image pushed successfully
+        run: |
+          echo "✅ Successfully built and pushed madcoda/docker-base:${{ matrix.image }}"
